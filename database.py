@@ -4,9 +4,11 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./library.db")
 
-# Kuch platforms "postgres://" dete hain, SQLAlchemy ko "postgresql://" chahiye
+# Driver psycopg2 force karo (naye SQLAlchemy me default psycopg3 hota hai)
 if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)
+elif DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
 
 # check_same_thread sirf SQLite ke liye hai
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
