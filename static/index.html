@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Library Management</title>
+<style>
+  :root { --bg:#f4f6fb; --card:#fff; --primary:#4f46e5; --danger:#dc2626; --ok:#16a34a; --text:#1f2937; --muted:#6b7280; --border:#e5e7eb; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, Segoe UI, Arial, sans-serif; background:var(--bg); color:var(--text); }
+  .hidden { display:none !important; }
+  button { cursor:pointer; border:0; border-radius:8px; padding:8px 14px; font-size:14px; background:var(--primary); color:#fff; }
+  button.secondary { background:#e5e7eb; color:var(--text); }
+  button.danger { background:var(--danger); }
+  button.ok { background:var(--ok); }
+  button.small { padding:5px 10px; font-size:12px; }
+  input { width:100%; padding:10px; border:1px solid var(--border); border-radius:8px; font-size:14px; }
+  label { font-size:13px; color:var(--muted); display:block; margin:10px 0 4px; }
+
+  /* Auth */
+  #auth { max-width:360px; margin:80px auto; background:var(--card); padding:28px; border-radius:14px; box-shadow:0 8px 30px rgba(0,0,0,.08); }
+  #auth h2 { margin-top:0; text-align:center; }
+  #auth .row { display:flex; gap:10px; margin-top:18px; }
+  #auth .row button { flex:1; }
+
+  /* App */
+  header { background:var(--primary); color:#fff; padding:14px 24px; display:flex; justify-content:space-between; align-items:center; }
+  header .right { display:flex; gap:12px; align-items:center; font-size:14px; }
+  header button { background:rgba(255,255,255,.2); }
+  .badge { background:rgba(255,255,255,.25); padding:2px 8px; border-radius:20px; font-size:12px; }
+  nav { display:flex; gap:8px; padding:16px 24px 0; }
+  nav button { background:transparent; color:var(--muted); border-bottom:3px solid transparent; border-radius:0; font-size:15px; }
+  nav button.active { color:var(--primary); border-bottom-color:var(--primary); font-weight:600; }
+  main { padding:16px 24px 40px; }
+  .toolbar { display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap; }
+  .toolbar input { max-width:280px; }
+  .card { background:var(--card); border-radius:12px; box-shadow:0 2px 10px rgba(0,0,0,.05); overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { padding:12px 14px; text-align:left; border-bottom:1px solid var(--border); white-space:nowrap; }
+  th { background:#f9fafb; color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase; }
+  td .actions { display:flex; gap:6px; }
+  .empty { padding:30px; text-align:center; color:var(--muted); }
+  .tag { padding:2px 8px; border-radius:20px; font-size:12px; }
+  .tag.green { background:#dcfce7; color:#166534; }
+  .tag.red { background:#fee2e2; color:#991b1b; }
+  .tag.yellow { background:#fef9c3; color:#854d0e; }
+
+  /* Modal */
+  #modal { position:fixed; inset:0; background:rgba(0,0,0,.45); display:flex; align-items:center; justify-content:center; z-index:10; }
+  #modal form { background:#fff; padding:24px; border-radius:14px; width:min(420px, 92vw); }
+  #modal h3 { margin-top:0; }
+  #modal .row { display:flex; gap:10px; justify-content:flex-end; margin-top:20px; }
+
+  /* Toast */
+  #toast { position:fixed; bottom:24px; right:24px; padding:12px 18px; border-radius:10px; color:#fff; z-index:20; max-width:340px; }
+  #toast.success { background:var(--ok); }
+  #toast.error { background:var(--danger); }
+</style>
+</head>
+<body>
+
+<!-- ============ LOGIN / REGISTER ============ -->
+<section id="auth">
+  <h2>📚 Library Login</h2>
+  <label>Username</label>
+  <input id="username" autocomplete="username">
+  <label>Password</label>
+  <input id="password" type="password" autocomplete="current-password">
+  <div class="row">
+    <button onclick="login()">Login</button>
+    <button class="secondary" onclick="register()">Register</button>
+  </div>
+</section>
+
+<!-- ============ MAIN APP ============ -->
+<section id="app" class="hidden">
+  <header>
+    <strong>📚 Library Management System</strong>
+    <div class="right">
+      <span id="whoami"></span>
+      <button onclick="logout()">Logout</button>
+    </div>
+  </header>
+  <nav>
+    <button data-tab="books" class="active" onclick="showTab('books')">Books</button>
+    <button data-tab="members" onclick="showTab('members')">Members</button>
+    <button data-tab="issues" onclick="showTab('issues')">Issues</button>
+  </nav>
+  <main id="content"></main>
+</section>
+
+<div id="modal" class="hidden"></div>
+<div id="toast" class="hidden"></div>
+
+<script>
+/* ================= STATE ================= */
+let token = localStorage.getItem("token");
+let me = null;
+let currentTab = "books";
+let booksCache = [], membersCache = [], issuesCache = [];
+const isAdmin = () => me && me.role === "admin";
+
+/* ================= HELPERS ================= */
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+}
+
+function toast(msg, type = "success") {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.className = type;
+  setTimeout(() => t.classList.add("hidden"), 3000);
+}
+
+async function api(path, { method = "GET", json, form } = {}) {
+  const headers = {};
+  let body;
+  if (token) headers["Authorization"] = "Bearer " + token;
+  if (json) { headers["Content-Type"] = "application/json"; body = JSON.stringify(json); }
+  if (form) { body = new URLSearchParams(form); }
+
+  const res = await fetch(path, { method, headers, body });
+  const data = await res.json().catch(() => ({}));
+
+  if (res.status === 401 && token) {
+    logout();
+    throw new Error("Session expire ho gaya, dobara login karo");
+  }
+  if (!res.ok) {
+    let msg = data.detail;
+    if (Array.isArray(msg)) msg = msg.map(e => e.loc.slice(-1)[0] + ": " + e.msg).join(", ");
+    throw new Error(msg || "Kuch galat hua");
+  }
+  return data;
+}
+
+async function run(fn) {          // error ko toast me dikhane ke liye
+  try { await fn(); } catch (e) { toast(e.message, "error"); }
+}
+
+/* ================= AUTH ================= */
+async function login() {
+  await run(async () => {
+    const u = document.getElementById("username").value.trim();
+    const p = document.getElementById("password").value;
+    const data = await api("/auth/login", { method: "POST", form: { username: u, password: p } });
+    token = data.access_token;
+    localStorage.setItem("token", token);
+    await startApp();
+  });
+}
+
+async function register() {
+  await run(async () => {
+    const u = document.getElementById("username").value.trim();
+    const p = document.getElementById("password").value;
+    if (!u || !p) throw new Error("Username aur password daalo");
+    const user = await api("/auth/register", { method: "POST", json: { username: u, password: p } });
+    toast(`Register ho gaya (role: ${user.role}). Ab Login dabao.`);
+  });
+}
+
+function logout() {
+  token = null; me = null;
+  localStorage.removeItem("token");
+  document.getElementById("app").classList.add("hidden");
+  document.getElementById("auth").classList.remove("hidden");
+}
+
+async function startApp() {
+  me = await api("/auth/me");
+  document.getElementById("auth").classList.add("hidden");
+  document.getElementById("app").classList.remove("hidden");
+  document.getElementById("whoami").innerHTML =
+    `👤 ${esc(me.username)} <span class="badge">${esc(me.role)}</span>`;
+  showTab("books");
+}
+
+/* ================= TABS ================= */
+function showTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll("nav button").forEach(b =>
+    b.classList.toggle("active", b.dataset.tab === tab));
+  ({ books: loadBooks, members: loadMembers, issues: loadIssues })[tab]();
+}
+
+/* ================= MODAL FORM ================= */
+function openForm(title, fields, values, onSubmit) {
+  const modal = document.getElementById("modal");
+  modal.innerHTML = `
+    <form id="modalForm">
+      <h3>${esc(title)}</h3>
+      ${fields.map(f => `
+        <label>${esc(f.label)}</label>
+        <input name="${f.name}" type="${f.type || "text"}" value="${esc(values?.[f.name] ?? "")}" ${f.required ? "required" : ""}>
+      `).join("")}
+      <div class="row">
+        <button type="button" class="secondary" onclick="closeModal()">Cancel</button>
+        <button type="submit">Save</button>
+      </div>
+    </form>`;
+  modal.classList.remove("hidden");
+
+  document.getElementById("modalForm").onsubmit = async (e) => {
+    e.preventDefault();
+    const data = {};
+    for (const f of fields) {
+      let v = e.target[f.name].value.trim();
+      if (v === "") continue;                       // khali field skip
+      data[f.name] = f.type === "number" ? Number(v) : v;
+    }
+    await run(async () => { await onSubmit(data); closeModal(); });
+  };
+}
+function closeModal() { document.getElementById("modal").classList.add("hidden"); }
+
+/* ================= BOOKS ================= */
+async function loadBooks(search = "") {
+  await run(async () => {
+    booksCache = await api(`/books?limit=100&search=${encodeURIComponent(search)}`);
+    const rows = booksCache.map(b => `
+      <tr>
+        <td>${b.id}</td>
+        <td>${esc(b.title)}</td>
+        <td>${esc(b.author)}</td>
+        <td>${esc(b.isbn)}</td>
+        <td>${b.available_copies} / ${b.total_copies}</td>
+        <td>${b.available_copies > 0 ? '<span class="tag green">Available</span>' : '<span class="tag red">Out</span>'}</td>
+        ${isAdmin() ? `<td><div class="actions">
+          <button class="small" onclick="editBook(${b.id})">Edit</button>
+          <button class="small danger" onclick="deleteBook(${b.id})">Delete</button>
+        </div></td>` : ""}
+      </tr>`).join("");
+
+    document.getElementById("content").innerHTML = `
+      <div class="toolbar">
+        <input id="q" placeholder="Title ya author search karo..." value="${esc(search)}"
+               onkeydown="if(event.key==='Enter') loadBooks(this.value)">
+        <button onclick="loadBooks(document.getElementById('q').value)">Search</button>
+        ${isAdmin() ? '<button class="ok" onclick="addBook()">+ Add Book</button>' : ""}
+      </div>
+      <div class="card">
+        ${rows ? `<table><thead><tr><th>ID</th><th>Title</th><th>Author</th><th>ISBN</th><th>Copies</th><th>Status</th>${isAdmin() ? "<th>Actions</th>" : ""}</tr></thead><tbody>${rows}</tbody></table>`
+               : '<div class="empty">Koi book nahi mili</div>'}
+      </div>`;
+  });
+}
+
+const bookFields = [
+  { name: "title", label: "Title", required: true },
+  { name: "author", label: "Author", required: true },
+  { name: "isbn", label: "ISBN", required: true },
+  { name: "total_copies", label: "Total Copies", type: "number", required: true },
+];
+
+function addBook() {
+  openForm("Add Book", bookFields, { total_copies: 1 }, async (data) => {
+    await api("/books", { method: "POST", json: data });
+    toast("Book add ho gayi ✅");
+    loadBooks();
+  });
+}
+function editBook(id) {
+  const b = booksCache.find(x => x.id === id);
+  openForm("Edit Book", bookFields, b, async (data) => {
+    await api(`/books/${id}`, { method: "PUT", json: data });
+    toast("Book update ho gayi ✅");
+    loadBooks();
+  });
+}
+async function deleteBook(id) {
+  if (!confirm("Is book ko delete karna hai?")) return;
+  await run(async () => {
+    await api(`/books/${id}`, { method: "DELETE" });
+    toast("Book delete ho gayi 🗑️");
+    loadBooks();
+  });
+}
+
+/* ================= MEMBERS ================= */
+async function loadMembers() {
+  await run(async () => {
+    membersCache = await api("/members?limit=100");
+    const rows = membersCache.map(m => `
+      <tr>
+        <td>${m.id}</td>
+        <td>${esc(m.name)}</td>
+        <td>${esc(m.email)}</td>
+        <td>${esc(m.phone || "-")}</td>
+        ${isAdmin() ? `<td><div class="actions">
+          <button class="small" onclick="editMember(${m.id})">Edit</button>
+          <button class="small danger" onclick="deleteMember(${m.id})">Delete</button>
+        </div></td>` : ""}
+      </tr>`).join("");
+
+    document.getElementById("content").innerHTML = `
+      <div class="toolbar">
+        ${isAdmin() ? '<button class="ok" onclick="addMember()">+ Add Member</button>' : ""}
+      </div>
+      <div class="card">
+        ${rows ? `<table><thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Phone</th>${isAdmin() ? "<th>Actions</th>" : ""}</tr></thead><tbody>${rows}</tbody></table>`
+               : '<div class="empty">Koi member nahi hai</div>'}
+      </div>`;
+  });
+}
+
+const memberFields = [
+  { name: "name", label: "Name", required: true },
+  { name: "email", label: "Email", type: "email", required: true },
+  { name: "phone", label: "Phone" },
+];
+
+function addMember() {
+  openForm("Add Member", memberFields, {}, async (data) => {
+    await api("/members", { method: "POST", json: data });
+    toast("Member add ho gaya ✅");
+    loadMembers();
+  });
+}
+function editMember(id) {
+  const m = membersCache.find(x => x.id === id);
+  openForm("Edit Member", memberFields, m, async (data) => {
+    await api(`/members/${id}`, { method: "PUT", json: data });
+    toast("Member update ho gaya ✅");
+    loadMembers();
+  });
+}
+async function deleteMember(id) {
+  if (!confirm("Is member ko delete karna hai?")) return;
+  await run(async () => {
+    await api(`/members/${id}`, { method: "DELETE" });
+    toast("Member delete ho gaya 🗑️");
+    loadMembers();
+  });
+}
+
+/* ================= ISSUES ================= */
+async function loadIssues(onlyActive = false) {
+  await run(async () => {
+    const [issues, books, members] = await Promise.all([
+      api(`/issues?only_active=${onlyActive}`),
+      api("/books?limit=100"),
+      api("/members?limit=100"),
+    ]);
+    issuesCache = issues;
+    const bookName = id => books.find(b => b.id === id)?.title ?? `#${id}`;
+    const memberName = id => members.find(m => m.id === id)?.name ?? `#${id}`;
+    const today = new Date().toISOString().slice(0, 10);
+
+    const rows = issues.map(i => {
+      let status;
+      if (i.return_date) status = '<span class="tag green">Returned</span>';
+      else if (i.due_date < today) status = '<span class="tag red">Overdue</span>';
+      else status = '<span class="tag yellow">Issued</span>';
+      return `
+      <tr>
+        <td>${i.id}</td>
+        <td>${esc(bookName(i.book_id))}</td>
+        <td>${esc(memberName(i.member_id))}</td>
+        <td>${i.issue_date}</td>
+        <td>${i.due_date}</td>
+        <td>${i.return_date || "-"}</td>
+        <td>${status}</td>
+        ${isAdmin() ? `<td>${i.return_date ? "" : `<button class="small ok" onclick="returnBook(${i.id})">Return</button>`}</td>` : ""}
+      </tr>`;
+    }).join("");
+
+    document.getElementById("content").innerHTML = `
+      <div class="toolbar">
+        <button class="${onlyActive ? "secondary" : ""}" onclick="loadIssues(false)">Sab</button>
+        <button class="${onlyActive ? "" : "secondary"}" onclick="loadIssues(true)">Sirf Active</button>
+        ${isAdmin() ? '<button class="ok" onclick="issueBook()">+ Issue Book</button>' : ""}
+      </div>
+      <div class="card">
+        ${rows ? `<table><thead><tr><th>ID</th><th>Book</th><th>Member</th><th>Issue Date</th><th>Due Date</th><th>Return Date</th><th>Status</th>${isAdmin() ? "<th>Action</th>" : ""}</tr></thead><tbody>${rows}</tbody></table>`
+               : '<div class="empty">Koi issue record nahi hai</div>'}
+      </div>`;
+  });
+}
+
+function issueBook() {
+  openForm("Issue Book", [
+    { name: "book_id", label: "Book ID", type: "number", required: true },
+    { name: "member_id", label: "Member ID", type: "number", required: true },
+    { name: "days", label: "Kitne din ke liye", type: "number" },
+  ], { days: 14 }, async (data) => {
+    await api("/issues", { method: "POST", json: data });
+    toast("Book issue ho gayi ✅");
+    loadIssues();
+  });
+}
+async function returnBook(id) {
+  await run(async () => {
+    await api(`/issues/${id}/return`, { method: "PUT" });
+    toast("Book return ho gayi ✅");
+    loadIssues();
+  });
+}
+
+/* ================= INIT ================= */
+document.getElementById("password").addEventListener("keydown", e => { if (e.key === "Enter") login(); });
+if (token) run(startApp).catch(() => logout());
+</script>
+</body>
+</html>
